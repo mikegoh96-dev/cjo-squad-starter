@@ -6,12 +6,15 @@ import { AppShell } from "@/components/app-shell";
 import { Bolt3D, Medal3D, Star3D, Trophy3D } from "@/components/art/objects";
 import { MilestoneBadges } from "@/components/mission/milestone-badges";
 import { MonthCards } from "@/components/mission/month-cards";
+import { PcChallengeCard } from "@/components/mission/pc-challenge-card";
 import { RecapVideoCard, RecapVideoProvider } from "@/components/recap/recap-video";
 import { SquadRecap } from "@/components/recap/squad-recap";
 import { StatusPill } from "@/components/status-pill";
 import { Card, Decor, Eyebrow, Meter, Ring } from "@/components/ui";
 import { getDashboard } from "@/lib/data/dashboard";
 import { ENCOURAGEMENT, nextMilestone, remainingMessage, unlockMessage } from "@/lib/mission";
+import { pcStanding } from "@/lib/pc";
+import { recapPcFrom } from "@/lib/recap-pc";
 
 export const metadata: Metadata = { title: "Mission" };
 
@@ -24,6 +27,8 @@ export default async function MissionPage() {
   const { progress, campaignName } = dashboard;
   const { focus, milestones, overall } = progress;
   const next = nextMilestone(milestones);
+  const pc = dashboard.pc;
+  const people = progress.contributions.map((c) => ({ id: c.squadMemberId, name: c.displayName }));
   const recapContext = {
     squadId: dashboard.squadId,
     campaign: { ...dashboard.campaign, name: campaignName },
@@ -50,6 +55,11 @@ export default async function MissionPage() {
       meterPercent: overall.meterPercent,
       complete: overall.complete,
     },
+    // Percentage only reaches the recap (never amounts or names); not before entries open.
+    pc:
+      pc && pc.phase !== "before"
+        ? recapPcFrom(pc.challenge, pc.phase, pcStanding(pc.challenge, people, pc.amounts), dashboard.campaign.timeZone)
+        : null,
   };
 
   return (
@@ -96,6 +106,16 @@ export default async function MissionPage() {
           <MilestoneBadges milestones={milestones} />
         </div>
       </section>
+
+      {pc ? (
+        <PcChallengeCard
+          challenge={pc.challenge}
+          phase={pc.phase}
+          standing={pcStanding(pc.challenge, people, pc.amounts)}
+          initials={Object.fromEntries(progress.contributions.map((c) => [c.squadMemberId, c.initials]))}
+          timeZone={dashboard.campaign.timeZone}
+        />
+      ) : null}
 
       <RecapVideoProvider ctx={recapContext}>
         <SquadRecap ctx={recapContext} />

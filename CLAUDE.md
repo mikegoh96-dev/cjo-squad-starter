@@ -9,8 +9,12 @@ squad-vs-squad comparisons. The primary metric is collective squad progress.
 Recaps and videos never show how many (or which) teammates did or didn't add
 cases, and never a prominent "in progress" label: either can single someone out.
 
-The database stores case **counts** only. Never store client names, NRIC,
-policy numbers, premiums, medical, product or financial-planning data.
+The database stores case **counts** and, for a PC$ challenge, each member's
+own **cumulative PC$ total** (whole dollars) only. Never store client names,
+NRIC, policy numbers, premiums, medical, product or financial-planning data.
+PC$ exception (owner's decision, 2026-11-01): member cards show each member's
+amount and "Minimum achieved" / "$X to minimum", and the Mission page lists
+every member A–Z with the same; never sorted by amount, never ranked.
 
 ## Stack
 
@@ -34,8 +38,9 @@ monthly milestones (first case, 50%, 75%, target) with a short celebration;
 one big card per member (A–Z) on the dashboard with -/+ to update their
 count for the open month. Mobile-first. Push notifications (added 2026-10-07;
 V2 on 2026-10-14 at the owner's request, see below): consolidated squad
-activity, shared milestones + one rally, private monthly check-in reminders,
-a Monday recap; an in-app cheer panel; a monthly check-in. A Squad Recap
+activity, shared milestones + one rally, a Monday recap (the check-in card,
+its reminders and the cheer panel were removed on 2026-11-02 at the owner's
+request; see below). A Squad Recap
 and a downloadable weekly / monthly recap video for Instagram Stories (added
 2026-10-24/25 at the owner's request, Mission page only; see below).
 Anything else
@@ -113,19 +118,61 @@ One shared URL for the whole squad. No accounts, no sign-in anywhere.
     a "How squad alerts work" card. `public/sw.js` shows
     `{title, body, tag, url}` and opens the url (milestones/rally/recap
     `/mission`, reminders `/?checkin=1`).
-  - **Check-in** (`src/components/checkin/checkin-card.tsx`, `member_checkins`):
-    "Which card is yours?" is remembered on the phone (`src/lib/me.ts`,
-    localStorage) and synced to the phone's subscription
-    (`set_push_device_member`) for reminder routing; it is NOT identity. Only
-    that member's card shows "You" and the Check in control ("Confirm 0 cases"
-    works); `confirm_checkin` must match the stored count and cancels queued
-    reminders. There is no list of who has or hasn't checked in.
-  - **Cheers** (`src/components/cheers/cheer-panel.tsx`, `send_cheer`,
-    `public.squad_cheers`): 4 presets, anonymous (no member/device stored),
-    rate-limited (per browser hash + squad-wide), never pushed, kept 2 days,
-    live via Realtime (polling every 8 s as fallback).
+  - **Removed 2026-11-02 (owner's decision): the monthly check-in card
+    ("Which card is yours?", "Confirm 0 cases", the "You" chip, the phone-to-
+    member link and the "My check-in reminders" toggle) and the cheer panel.**
+    Migration `20261103090000_checkin_reminders_off.sql` sets
+    `notify_policy.reminder_cap = 0` (the planner queues no reminders) and
+    cancelled queued ones. The database side is kept but unused:
+    `member_checkins`, `confirm_checkin` / `get_checkin`,
+    `set_push_device_member`, `checkin_reminders`, `send_cheer`,
+    `squad_cheers`, `cheer_log`, `pref_reminders`. Bringing either back means a
+    new screen (and `reminder_cap` 1-3 for reminders).
   Manifest `src/app/manifest.ts`, icons in `public/` + `src/app/apple-icon.png`.
   Without the push env vars the card is hidden and nothing is sent.
+- **PC$ challenge** (added 2026-11-01 at the owner's request; migration
+  `20261101090000_pc_challenge.sql`, this squad's November seed
+  `20261101090100_pc_challenge_nov_2026.sql`): `public.pc_challenges` holds
+  the challenge as data (eligible period, official squad target used as
+  stored, individual minimum, entry window `opens_at`..`closes_at`);
+  `public.member_pc_amounts` one CURRENT cumulative amount per member (0 to
+  100,000,000, public read); `private.pc_amount_history` audits every change
+  (trigger). The only write is `submit_pc_amounts(challenge, entries)`: a batch
+  of `{squad_member_id, amount, expected}`, conflict-safe per member like
+  `submit_case_count` (`saved` / `unchanged` / `conflict`), rejected outside
+  the window. Completely separate from case counts. While a challenge is open,
+  every member card (`member-card.tsx` `children`) shows a "NOVEMBER PC$" field
+  under the case controls (`src/components/squad/pc-entry.tsx`:
+  `PcEntryProvider`, `PcField`, `PcSaveBar`): numeric keypad, digits only,
+  live thousands separators, nothing saved while typing; leaving an empty
+  field restores the saved amount; unsaved values are marked on the field,
+  kept in sessionStorage across tabs and through failed saves, and block app
+  updates (`setUnsaved("pc:<id>")`). One "Save PC$ updates" button below the
+  cards sends only changed values (`savePcAmounts` Server Action ->
+  `src/lib/data/pc-updates.ts`), with saving / saved / error / conflict
+  states. The Mission page shows `PcChallengeCard` (squad total vs target,
+  remaining, minimum, members A–Z); complete = target reached AND every member
+  at the minimum. Maths and formatting: `src/lib/pc.ts` (unit-tested). The
+  dashboard loads challenges in its first parallel round trip and hides PC$
+  if that query fails (e.g. before the migration).
+  **PC$ notifications** (migration `20261102090000_pc_notifications.sql`, on
+  the same outbox: claim / deliver / retry / quiet hours / preferences): the
+  save (`private.submit_pc_amounts_at`, behind `submit_pc_amounts`) queues ONE
+  job in its own transaction via `private.pc_enqueue` (failed, rolled-back,
+  unchanged or conflict-only saves queue nothing; key
+  `pc:<challenge>:<first history id>`), and `savePcAmounts` delivers it at once
+  (`notifyAfterPcSave` via `after()`; the scheduler is the fallback). Saves are
+  serialised per challenge (advisory lock). `pc_activity`: whose cumulative
+  amount changed and to what (increase, first entry or correction) + the squad
+  total from saved amounts; `pc_milestone` adds the individual minimum crossing
+  (below -> at/above) and/or the squad target first reached, each recorded once
+  per challenge in `private.pc_milestones` (a correction below and a later
+  re-crossing is never announced again). One message per save, the highest
+  event as its title. A job not yet picked up (quiet hours) absorbs later
+  saves: one morning message, aged from its send time. Preferences:
+  `pc_activity` = activity; `pc_milestone` = activity or milestones. Wording in
+  `renderJob` (`jobs.ts`): names whose amount it is, never who typed it, no
+  pronouns, no reward implied.
 - **Launch splash** (`src/components/splash-screen.tsx`, CSS "Splash" in
   `globals.css`, mounted in the root layout): server-rendered, so it paints
   with the first HTML and animates with CSS before any JavaScript. The logo is
@@ -142,7 +189,7 @@ One shared URL for the whole squad. No accounts, no sign-in anywhere.
 - **Squad Recap** (Mission page only; `src/components/recap/`): the "Squad
   Recap" card -> "Generate Recap" -> pick Weekly (this week / last week) or
   Monthly (each campaign month that has started), with the exact period shown
-  -> a ~22 s animated story (opening, squad performance, milestones, thank-you
+  -> a ~22 s animated story (opening, squad performance, [PC$ result], milestones, thank-you
   to the whole squad A–Z, next mission) with pause, back/next, skip to summary,
   close (× / Escape) -> a summary card (Replay, Back to Mission, "Download
   Weekly Recap Video" + "Download Monthly Recap Video" (the viewed kind first;
@@ -170,12 +217,12 @@ One shared URL for the whole squad. No accounts, no sign-in anywhere.
   preview, Generate Video, then Download Video / Share (file share, when the
   browser supports it) / Preview Again / Close. Made entirely on the phone:
   `video/composition.tsx` draws a dedicated 1080 × 1920 composition on a
-  canvas (5 scenes, 20.6 s, the Mission page look + the 3D art rasterised from
+  canvas (5 scenes, 20.6 s; 6 scenes, 25.2 s with the PC$ result; the Mission page look + the 3D art rasterised from
   `components/art`; weekly: the week's net cases, a Mon–Sun bar per day and
   the month(s) as of the week's end instead of the month ring), `video/encode.ts` encodes every frame as H.264 with
   WebCodecs and muxes MP4 with **Mediabunny** (pinned 1.61.3, MPL-2.0,
   dynamic import: only loaded when the dialog opens). Output is fixed in
-  `src/lib/recap-video.ts` (`VIDEO`: 1080 × 1920, 30 fps, 618 frames, no
+  `src/lib/recap-video.ts` (`VIDEO`: 1080 × 1920, 30 fps, 618 frames (756 with PC$: `videoScenes` / `videoFrames` per report), no
   audio, ~7 Mbit/s); the report is built there from `computeRecap` (no second
   calculation), and one snapshot per month feeds both the preview and the file.
   Progress = frames encoded; one job at a time; Cancel / Close stops it and
@@ -184,6 +231,19 @@ One shared URL for the whole squad. No accounts, no sign-in anywhere.
   is uploaded or stored; no server rendering. File:
   `<fileSlug>-<Month>-<Year>.mp4` or `<fileSlug>-Week-of-<D>-<Mon>-<Year>.mp4`
   (`squadConfig.fileSlug`, e.g. `CJO-Squad-Recap`; `.png` for the still).
+- **PC$ result in the recaps** (added 2026-11-27 at the owner's request;
+  `src/lib/recap-pc.ts`, unit-tested): the monthly Squad Recap and recap video
+  of the challenge's month get a "<Month> PC$ Challenge" scene right after the
+  cases result (story +4.5 s; video `VIDEO_PC_SCENE`, +4.6 s). **Percentage
+  only** (floored, squad level): never an amount, a name or how many members
+  did or didn't reach the minimum. Status: "Target reached! 🎯" / while open
+  "So far · entries close <closesLabel>" / closed "Together we reached X% of our
+  target". "Every member reached the individual minimum ✓" only when true for
+  everyone; otherwise the minimum isn't mentioned. The summary card and the
+  shared text add one line (`pcSummaryLine`). The Mission page builds
+  `RecapContext.pc` on the server (`recapPcFrom`; null before entries open or
+  without a challenge), so only these fields reach the browser. Every other
+  recap and video keeps its exact timeline.
 - **App updates** (Home Screen apps resume old copies and have no reload or
   pull-to-refresh): `next.config.ts` stamps each build with `APP_VERSION`
   (Vercel deployment id); `/api/version` returns the live one (no-store).
@@ -198,8 +258,7 @@ One shared URL for the whole squad. No accounts, no sign-in anywhere.
 **Security trade-off (accepted for a trusted internal team tool):** because
 there is no authentication, the system **cannot prove who submitted a count**.
 Anyone with the link can pick any name and change that member's current-month
-total, confirm that member's check-in, or link a phone to them (reminder
-routing only; a phone link is never proof of who holds it). Mitigations:
+total or PC$ amount. Mitigations:
 - the only write path is `submit_case_count(member, count, expected)`; no table
   is writable by the browser roles;
 - only existing squad members, only the open month (campaign time zone), only
@@ -241,13 +300,13 @@ The `(dashboard)` route group holds `/`, `/mission` and `/settings` with their
 | `src/lib/supabase/browser.ts` | Browser client for Realtime only (publishable key) |
 | `src/lib/push/` | `jobs.ts` (V2 wording, error classes, runner), `message.ts` + `deliver.ts` (legacy direct send), `endpoint.ts` (allowed push hosts) — unit-tested; `server.ts` (server-only: config, web-push, `runNotifications`, `notifyAfterSave`, legacy `notifyCasesAdded`, `sendWelcome`); `client.ts` (support check, SW registration, VAPID key); `policy.ts` (quiet-hours / recap labels for the UI, from `squadConfig.notifications`) |
 | `src/app/api/notify/run/route.ts` | Scheduler endpoint (Bearer `CRON_SECRET`) |
-| `src/app/(dashboard)/squad-actions.ts` | Check-in, phone link/preferences, cheers (Server Actions) |
-| `src/lib/me.ts`, `src/lib/cheers.ts` | This phone's member (localStorage store); cheer keys |
+| `src/app/(dashboard)/squad-actions.ts` | This phone's notification preferences (Server Action) |
 | `src/lib/recap.ts`, `src/lib/recap-client.ts`, `src/components/recap/` | Squad Recap: periods + metrics (unit-tested), browser read, entry card / picker / player / summary |
 | `src/lib/recap-video.ts`, `src/components/recap/recap-video.tsx`, `src/components/recap/video/` | Weekly / monthly recap video: report + timeline (unit-tested), export dialog, canvas composition, MP4 encoder / PNG fallback |
 | `src/lib/app-version.ts`, `src/components/app-update.tsx`, `src/app/api/version/route.ts` | Self-update for Home Screen apps (see "App updates") |
 | `src/components/` | `ui.tsx` (Card, Meter, Ring, Avatar), icons, `app-shell`, `nav/bottom-nav`, `mission/*` |
 | `scripts/members.mjs` | Admin CLI: list / add / rename / remove members |
+| `src/lib/pc.ts`, `src/components/squad/pc-entry.tsx`, `src/components/mission/pc-challenge-card.tsx`, `src/app/(dashboard)/pc-actions.ts`, `src/lib/data/pc-updates.ts` | PC$ challenge (see above) |
 
 The app never uses a service-role/secret key; all browser-facing code paths
 can do only what the `anon` role can do. Realtime respects RLS: browsers only
@@ -322,7 +381,7 @@ and Vercel project. No shared database, no cross-squad view.
 - **Starter template** (public `mikegoh96-dev/cjo-squad-starter`, a GitHub
   template repo): `npm run export:starter -- <dir>` (`scripts/export-starter.mjs`)
   builds it from `HEAD`: drops `docs/PRODUCTION.md`, this squad's campaign
-  migration and `06_campaign_seed.test.sql`, swaps in `starter/` (placeholder
+  and PC$ seed migrations and `06_campaign_seed.test.sql`, swaps in `starter/` (placeholder
   `squad.ts`, README) and fails if member names, the project ref, the
   production URL, the campaign or secret-looking text remain. So keep
   squad-specific values in `squad.ts`, the campaign migration or
@@ -379,10 +438,11 @@ month), `member_case_counts` (a member's **current** monthly total, integer
 endpoints must be a known browser push service; optional `squad_member_id`
 link + four `pref_*` flags), `member_checkins` (private; confirmed count per
 member per month, zero allowed), `squad_cheers` (public-read for 1 day,
-written only by `send_cheer`). Notification internals live in `private`
+written only by `send_cheer`), `pc_challenges` and `member_pc_amounts` (PC$
+challenge; written only by `submit_pc_amounts`). Notification internals live in `private`
 (`notify_policy`, `notification_jobs`, `notification_deliveries`,
 `notification_activity_items`, `notification_milestones`, `checkin_reminders`,
-`cheer_log`).
+`cheer_log`, `pc_milestones`).
 
 The squad total is **derived**, never stored (`squad_monthly_progress` view /
 `computeSquadProgress`). Campaign targets are data (`monthly_targets`; seeded per deployment by
@@ -393,7 +453,7 @@ The open month is resolved in the campaign's `time_zone`.
 
 | Role | Can | Cannot |
 | --- | --- | --- |
-| anon / authenticated | SELECT members, squads, squad_members, campaigns, monthly_targets, member_case_counts, squad_monthly_progress; call `submit_case_count(member, count, expected)`, `squad_momentum(squad)`, `squad_member_momentum(squad)`, `member_recent_updates(member, limit)` (currently unused by the UI), `squad_recap_history(squad, campaign, until)` (the squad's recorded changes: time, month, net change, squad member; counts only), `register_push_device` / `unregister_push_device`, `get_push_device_settings` / `set_push_device_member` / `set_push_device_prefs` (by endpoint), `confirm_checkin` / `get_checkin` (one member), `send_cheer`; SELECT recent `squad_cheers` | INSERT/UPDATE/DELETE any table; read raw `case_update_history` or `member_checkins`; list push devices or touch the outbox (`push_devices`, `forget_push_devices`, `notify_plan`, `notify_claim`, `notify_complete` need `PUSH_SECRET`) |
+| anon / authenticated | SELECT members, squads, squad_members, campaigns, monthly_targets, member_case_counts, squad_monthly_progress; call `submit_case_count(member, count, expected)`, `squad_momentum(squad)`, `squad_member_momentum(squad)`, `member_recent_updates(member, limit)` (currently unused by the UI), `squad_recap_history(squad, campaign, until)` (the squad's recorded changes: time, month, net change, squad member; counts only), `register_push_device` / `unregister_push_device`, `get_push_device_settings` / `set_push_device_member` / `set_push_device_prefs` (by endpoint), `confirm_checkin` / `get_checkin` (one member), `send_cheer`; SELECT recent `squad_cheers`; SELECT `pc_challenges`, `member_pc_amounts`; call `submit_pc_amounts(challenge, entries)` | INSERT/UPDATE/DELETE any table; read raw `case_update_history`, `member_checkins` or `private.pc_amount_history`; list push devices or touch the outbox (`push_devices`, `forget_push_devices`, `notify_plan`, `notify_claim`, `notify_complete` need `PUSH_SECRET`) |
 | service_role (admin CLI) | manage squads, members and counts | — |
 
 The functions are `security definer` with `search_path = ''`; private helpers
